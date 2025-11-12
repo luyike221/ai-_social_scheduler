@@ -1,0 +1,13 @@
+[project]
+name = "ai-social-scheduler"
+version = "0.1.0"
+description = "AI驱动的智能社交媒体运营调度系统，支持小红书等平台的内容发布、互动管理和数据分析"
+requires-python = ">=3.11"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatchling.build]
+packages = ["src/ai_social_scheduler"]
