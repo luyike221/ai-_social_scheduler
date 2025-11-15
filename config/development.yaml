@@ -1,0 +1,17 @@
+# 开发环境配置
+app:
+  name: xiaohongshu-agent
+  debug: true
+  log_level: DEBUG
+
+database:
+  url: postgresql+asyncpg://user:password@localhost:5432/xiaohongshu_dev
+  echo: true
+
+redis:
+  url: redis://localhost:6379/0
+
+llm:
+  provider: openai
+  model: gpt-4
+
