@@ -29,6 +29,7 @@ dependencies = [
     "pillow>=11.0.0",
     "sentence-transformers>=2.7.0",
     "python-dotenv>=1.0.0",
+    "grandalf>=0.8",
 ]
 
 [build-system]
