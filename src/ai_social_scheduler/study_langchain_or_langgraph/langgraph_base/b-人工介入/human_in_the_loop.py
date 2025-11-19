@@ -58,11 +58,42 @@ def human_assistance(query: str) -> str:
     Returns:
         str: 人工提供的响应
     """
-    # interrupt 会暂停执行，等待人工输入
-    # 传入的数据会在恢复时通过 Command 对象返回
+    # ==================== interrupt() 和 Command 的配合机制 ====================
+    # 
+    # interrupt() 函数的工作原理：
+    #
+    # 第一次调用（执行被中断）：
+    #   - interrupt({"query": query}) 被调用
+    #   - 抛出一个 GraphInterrupt 异常
+    #   - 图的执行被暂停
+    #   - 状态被保存到 checkpointer
+    #   - 传入的值 {"query": query} 会被保存，用于向客户端展示
+    #   - 函数不会返回（因为抛出了异常）
+    #
+    # 恢复执行时（使用 Command）：
+    #   - 节点会从开始重新执行（re-execute）
+    #   - interrupt() 再次被调用
+    #   - 但这次 LangGraph 检测到有 Command(resume={...})
+    #   - interrupt() 不再抛出异常，而是返回 Command.resume 的值
+    #   - 在这个例子中，Command(resume={"data": human_input})
+    #   - 所以 interrupt() 会返回 {"data": human_input}
+    #   - human_response = {"data": human_input}
+    #
+    # 关键点：
+    #   - interrupt() 的行为取决于是否有 resume 值
+    #   - 第一次：抛出异常，暂停执行
+    #   - 恢复时：返回 resume 值，继续执行
+    #   - 这允许节点"假装"从未被中断，正常完成执行
+    # ============================================================================
     print(f"interrupt 开始: {query}")
+    
+    # 第一次调用：抛出异常，暂停执行
+    # 恢复执行时：返回 Command(resume={...}) 中的值
     human_response = interrupt({"query": query})
+    
     # 从 Command 对象中提取人工输入的数据
+    # 恢复执行时，human_response 会是 Command.resume 的值
+    # 在这个例子中，是 {"data": human_input}
     return human_response["data"]
 
 
@@ -258,10 +289,69 @@ def run_example():
                 print(f"助手: {last_message.content}")
                 print()
     
-    # 检查图的状态，看是否被中断
+    # ==================== 检查图的状态 ====================
+    # graph.get_state(config) 的作用：
+    # 
+    # 1. 从 checkpointer（检查点保存器）中读取图的最新状态
+    # 2. 返回一个 StateSnapshot 对象，包含以下信息：
+    #    - snapshot.values: 当前状态的所有值（如 messages）
+    #    - snapshot.next: 下一个要执行的节点列表（如果图被中断，这里会有值）
+    #    - snapshot.tasks: 待执行的任务列表（中断的任务会在这里）
+    #    - snapshot.interrupts: 中断信息列表
+    #    - snapshot.config: 使用的配置
+    #    - snapshot.metadata: 检查点元数据
+    #    - snapshot.created_at: 状态创建时间
+    #
+    # 3. 为什么需要检查状态？
+    #    - 图的执行可能被中断（interrupt）
+    #    - 如果图正常完成，snapshot.next 会是空的
+    #    - 如果图被中断，snapshot.next 会包含下一个要执行的节点
+    #    - 我们需要检查是否有待处理的节点，来判断是否需要恢复执行
+    #
+    # 4. 状态是如何保存的？
+    #    - 图在执行过程中，每个节点执行后都会保存状态到 checkpointer
+    #    - 如果遇到 interrupt()，状态会被保存，然后执行暂停
+    #    - 通过 thread_id（在 config 中）可以访问特定会话的状态
+    # ========================================================
     snapshot = graph.get_state(config)
     
-    # 如果还有下一个节点（通常是 tools），说明可能被中断了
+    # ==================== 为什么"还有下一个节点"表示被中断？====================
+    # 
+    # 理解这个逻辑需要了解图的执行流程：
+    #
+    # 图的执行流程：
+    #   START → chatbot → (检查是否有工具调用)
+    #                    ↓
+    #            ┌───────┴───────┐
+    #            ↓               ↓
+    #          tools          END (完成)
+    #            ↓
+    #         chatbot (处理工具结果)
+    #            ↓
+    #          END (完成)
+    #
+    # 正常完成的情况：
+    #   1. chatbot 没有工具调用 → 直接到 END → snapshot.next = ()
+    #   2. tools 执行完成 → 回到 chatbot → chatbot 处理完成 → END → snapshot.next = ()
+    #
+    # 被中断的情况：
+    #   1. chatbot 调用工具 → 路由到 tools 节点
+    #   2. tools 节点执行 human_assistance 工具
+    #   3. human_assistance 内部调用 interrupt() → 执行暂停
+    #   4. 此时 tools 节点还没有完成，但执行已被中断
+    #   5. 根据图的边定义：tools → chatbot
+    #   6. 所以 snapshot.next = ("chatbot",) ← 下一个要执行的节点
+    #
+    # 关键点：
+    #   - 如果图正常完成，所有节点都执行完毕，没有下一个节点 → snapshot.next = ()
+    #   - 如果图被中断，当前节点还没完成，还有待执行的节点 → snapshot.next != ()
+    #   - 在这个图中，中断通常发生在 tools 节点执行时
+    #   - 中断后，下一个节点通常是 "chatbot"（因为 tools → chatbot）
+    #
+    # 注意：
+    #   - snapshot.next 可能包含多个节点（如果有并行执行）
+    #   - 在这个简单图中，通常只有一个节点
+    # ============================================================================
     if snapshot.next:
         print("\n" + "=" * 60)
         print("⚠️  执行已暂停（中断）")
@@ -297,10 +387,77 @@ def run_example():
         if human_input.lower() == "skip":
             human_input = "抱歉，暂时无法提供协助。"
         
-        # 使用 Command 对象恢复执行
+        # ==================== Command 对象如何恢复执行 ====================
+        # 
+        # Command 对象是 LangGraph 提供的恢复执行机制，它的工作原理：
+        #
+        # 1. interrupt() 和 Command 的配合：
+        #    - interrupt() 调用时会抛出一个 GraphInterrupt 异常
+        #    - 这个异常会暂停图的执行，并将状态保存到 checkpointer
+        #    - interrupt() 传入的值（如 {"query": query}）会被保存
+        #    - 当恢复执行时，Command(resume={...}) 中的值会传递给 interrupt()
+        #
+        # 2. 执行流程：
+        #    ┌─────────────────────────────────────────────────┐
+        #    │ 第一次执行（被中断）                            │
+        #    └─────────────────────────────────────────────────┘
+        #    tools 节点执行
+        #      ↓
+        #    human_assistance 工具被调用
+        #      ↓
+        #    interrupt({"query": query}) 被调用
+        #      ↓
+        #    抛出 GraphInterrupt 异常
+        #      ↓
+        #    执行暂停，状态保存到 checkpointer
+        #      ↓
+        #    生成器结束，for 循环退出
+        #
+        #    ┌─────────────────────────────────────────────────┐
+        #    │ 恢复执行                                        │
+        #    └─────────────────────────────────────────────────┘
+        #    Command(resume={"data": human_input}) 创建
+        #      ↓
+        #    graph.stream(human_command, config) 被调用
+        #      ↓
+        #    LangGraph 从 checkpointer 读取保存的状态
+        #      ↓
+        #    从上次中断的节点（tools）重新开始执行
+        #      ↓
+        #    human_assistance 工具再次执行
+        #      ↓
+        #    interrupt() 再次被调用，但这次：
+        #      - 不再抛出异常（因为已经有 resume 值）
+        #      - 直接返回 Command.resume 中的值
+        #      ↓
+        #    human_assistance 返回 human_input
+        #      ↓
+        #    tools 节点完成，继续执行后续节点
+        #
+        # 3. 关键机制：
+        #    - interrupt() 在第一次调用时抛出异常，暂停执行
+        #    - 当使用 Command(resume={...}) 恢复时，interrupt() 会返回 resume 的值
+        #    - 节点会从开始重新执行（re-execute），但这次 interrupt() 会返回 resume 值
+        #    - 这允许节点"假装"从未被中断，继续执行
+        #
+        # 4. resume 参数的结构：
+        #    - 可以是单个值：Command(resume="some value")
+        #    - 可以是字典：Command(resume={"data": "some value"})
+        #    - 可以是中断 ID 到值的映射：Command(resume={interrupt_id: value})
+        #    - 在这个例子中，我们使用字典格式 {"data": human_input}
+        #      interrupt() 会返回这个字典，然后我们通过 human_response["data"] 提取值
+        #
+        # 5. 为什么需要 checkpointer？
+        #    - interrupt 机制依赖于状态持久化
+        #    - checkpointer 保存了中断时的状态和中断信息
+        #    - 恢复时需要从 checkpointer 读取这些信息
+        #    - 没有 checkpointer，无法恢复执行
+        # ====================================================================
         print("\n恢复执行...")
         print("-" * 60)
         
+        # 创建 Command 对象，指定恢复执行时传递给 interrupt() 的值
+        # resume 参数的值会被传递给 interrupt() 函数，作为它的返回值
         human_command = Command(resume={"data": human_input})
         
         # ==================== 恢复执行：新的生成器 ====================
