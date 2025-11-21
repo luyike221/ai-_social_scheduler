@@ -7,7 +7,7 @@ from typing import Any
 import structlog
 from structlog.stdlib import LoggerFactory
 
-from ..config import settings
+from ...config import settings
 
 
 def configure_logging() -> None:

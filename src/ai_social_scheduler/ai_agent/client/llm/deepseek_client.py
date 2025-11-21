@@ -5,8 +5,8 @@ from typing import AsyncIterator, List, Optional
 from langchain_core.messages import BaseMessage
 from langchain_openai import ChatOpenAI
 
-from ..config import model_config
-from ..tools.logging import get_logger
+from ....config import model_config
+from ...tools.logging import get_logger
 from .base import BaseLLMClient
 
 logger = get_logger(__name__)
